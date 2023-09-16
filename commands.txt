@@ -1,0 +1,4 @@
+~/dsys/maelstrom/maelstrom test -w echo --bin ~/dsys/distributed_systems/target/release/echo --node-count 1 --time-limit 10
+~/dsys/maelstrom/maelstrom test -w unique-ids --bin ~/dsys/distributed_systems/target/release/generate --time-limit 30 --rate 1000 --node-count 3 --availability total --nemesis partition
+~/dsys/maelstrom/maelstrom test -w broadcast --bin ~/dsys/distributed_systems/target/release/broadcast --node-count 15 --time-limit 20 --rate 10
+~/dsys/maelstrom/maelstrom test -w broadcast --bin ~/dsys/distributed_systems/target/release/broadcast --node-count 15 --time-limit 20 --rate 10 --nemesis partition

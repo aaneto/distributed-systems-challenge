@@ -1,9 +1,12 @@
 use std::collections::{VecDeque, HashMap, HashSet};
+use std::time::{Instant, Duration};
 use std::sync::mpsc::{channel, TryRecvError};
 use std::thread;
 
 use distributed_systems::maelstrom::*;
 use serde::{Deserialize, Serialize};
+
+const WAIT_TIME: Duration = Duration::from_millis(500);
 
 fn main() {
     let node_id = get_node_id().unwrap();
@@ -12,8 +15,10 @@ fn main() {
         neighborhood: vec![],
         values: HashSet::new(),
 
+        sending_index: 0,
         to_send: VecDeque::new(),
         past_broadcast: HashSet::new(),
+        resend_timer: Instant::now(),
     };
     let (tx, rx) = channel();
 
@@ -29,8 +34,21 @@ fn main() {
                 handle_message(node_message, &mut state).expect("Could not parse message");
             }
             Err(TryRecvError::Empty) => {
-                if let Some(response) = state.to_send.pop_front() {
-                    write_node_message(&response).expect("Cannot write message.");
+                if state.sending_index >= state.to_send.len() {
+                    state.sending_index = 0;
+                } else {
+                    let response = state.to_send.get(state.sending_index).unwrap();
+                    let dest_node = response.dest.clone();
+                    let message = response.body.message;
+                    if state.past_broadcast.contains(&(dest_node, message)) {
+                        state.to_send.remove(state.sending_index).unwrap();
+                        eprintln!("Removed from to_send: {}", state.to_send.len());
+                    }
+                    else if state.resend_timer.elapsed() > WAIT_TIME {
+                        write_node_message(response).expect("Cannot write resend message.");
+                        state.sending_index += 1;
+                        state.resend_timer = Instant::now();
+                    }
                 }
             }
             Err(TryRecvError::Disconnected) => panic!("Internal error"),
@@ -45,6 +63,7 @@ fn handle_message(
     match request.body {
         RequestType::BroadcastOk(broadcast_ok) => {
             state.past_broadcast.insert((request.src, broadcast_ok.msg_id.unwrap()));
+            state.resend_timer = Instant::now() - 2 * WAIT_TIME;
         }
         RequestType::Read(read_body) => {
             let n = NodeMessage {
@@ -79,14 +98,15 @@ fn handle_message(
                 let node = NodeMessage {
                     src: state.node_id.clone(),
                     dest: neighborhood_node_id.clone(),
-                    body: ResponseBody::Broadcast(BroadcastResponse {
+                    body: BroadcastResponse {
                         _type: "broadcast".into(),
                         in_reply_to: None,
                         msg_id: None,
                         message: broadcast_request.message,
-                    }),
+                    },
                 };
 
+                state.to_send.push_back(node.clone());
                 write_node_message(&node).unwrap();
             }
         }
@@ -115,8 +135,10 @@ struct GlobalState {
     neighborhood: Vec<String>,
     values: HashSet<u64>,
 
-    to_send: VecDeque<NodeMessage<ResponseBody>>,
+    sending_index: usize,
+    to_send: VecDeque<NodeMessage<BroadcastResponse>>,
     past_broadcast: HashSet<(String, u64)>,
+    resend_timer: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

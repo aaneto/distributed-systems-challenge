@@ -6,10 +6,9 @@ pub fn read_node_message<B>() -> Result<NodeMessage<B>, Box<dyn Error>>
 where
     B: DeserializeOwned,
 {
-    // eprintln!("READING INPUT");
     let mut buffer = String::new();
     std::io::stdin().read_line(&mut buffer)?;
-    // eprintln!("INPUT: {}", buffer);
+    // eprintln!("READ: {}", buffer);
     let node_input: NodeMessage<B> = serde_json::from_str(&buffer)?;
     Ok(node_input)
 }
@@ -19,11 +18,21 @@ where
     B: Serialize,
 {
     let text: String = serde_json::to_string(&response)?;
-    // eprintln!("SENDING: {}\n", text);
+    // eprintln!("SENDING: {}", text);
     std::io::stdout().write_all(text.as_bytes())?;
     std::io::stdout().write_all(b"\n")?;
     std::io::stdout().flush()?;
-    // eprintln!("SENT DATA");
+    Ok(())
+}
+
+pub fn write_node_message_no_flush<B>(response: &NodeMessage<B>) -> Result<(), Box<dyn Error>>
+where
+    B: Serialize,
+{
+    let text: String = serde_json::to_string(&response)?;
+    // eprintln!("SENDING: {}", text);
+    std::io::stdout().write_all(text.as_bytes())?;
+    std::io::stdout().write_all(b"\n")?;
     Ok(())
 }
 

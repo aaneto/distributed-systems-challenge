@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use distributed_systems::maelstrom::*;
+use serde::{Deserialize, Serialize};
 
 fn main() {
     let mut id_count = 0;

@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use distributed_systems::maelstrom::*;
+use serde::{Deserialize, Serialize};
 
 fn main() {
     let node_id = get_node_id().unwrap();

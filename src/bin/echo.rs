@@ -8,11 +8,11 @@ fn main() {
     }
 }
 
-fn node_loop(node_id: &String) -> Result<(), Box<dyn std::error::Error>> {
+fn node_loop(node_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     let msg: NodeMessage<EchoRequest> = read_node_message()?;
     let new_msg: NodeMessage<EchoResponse> = NodeMessage {
         dest: msg.src,
-        src: node_id.clone(),
+        src: node_id.to_owned(),
         body: EchoResponse {
             _type: "echo_ok".into(),
             in_reply_to: msg.body.msg_id,

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{channel, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -6,7 +6,12 @@ use std::time::{Duration, Instant};
 use distributed_systems::maelstrom::*;
 use serde::{Deserialize, Serialize};
 
-const WAIT_TIME: Duration = Duration::from_millis(200);
+const WAIT_TIME: Duration = Duration::from_millis(120);
+const READ_WAIT_TIME: Duration = Duration::from_millis(1850);
+
+fn main_nodes() -> Vec<String> {
+    vec![0, 5, 10, 15, 20].iter().map(|v| format!("n{v}")).collect()
+}
 
 fn main() {
     let node_id = get_node_id().unwrap();
@@ -19,6 +24,9 @@ fn main() {
         message_bus: MessageBus {
             neighborhoods: HashMap::new(),
         },
+        customer_read_bus: CustomerBus {
+            messages: VecDeque::new(),
+        }
     };
     let (tx, rx) = channel();
 
@@ -28,6 +36,18 @@ fn main() {
         tx.send(request).unwrap();
     });
     loop {
+        if let Some(mut message) = state.customer_read_bus.pop() {
+            message.body.messages = state.values.iter().cloned().collect();
+            write_node_message(&message).expect("Cannot write resend message.");
+            eprintln!(
+                "{} [{}] Sent read_ok to {}: {:?}",
+                get_ts(),
+                state.node_id,
+                message.dest,
+                message.body.messages
+            );
+        }
+
         match rx.try_recv() {
             Ok(node_message) => {
                 handle_message(node_message, &mut state).expect("Could not parse message");
@@ -47,6 +67,81 @@ fn handle_message(
     state: &mut GlobalState,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match request.body {
+        RequestType::ReadOk(read_ok) => {
+            let ok_msgs: HashSet<u64> = read_ok.messages.into_iter().collect();
+            let new_msgs: HashSet<u64> = ok_msgs.difference(&state.values).copied().collect();
+            state.values = state.values.union(&new_msgs).copied().collect();
+
+            eprintln!(
+                "{} [{}] Received read_ok({:?}) from {}",
+                get_ts(),
+                state.node_id,
+                state.values,
+                request.src
+            );
+
+            if new_msgs.is_empty() {
+                return Ok(());
+            }
+
+            for msg in new_msgs {
+                for dst_node_id in state.neighborhood.iter() {
+                    // Node is sending us broadcast, we don't need to broadcast to it.
+                    state
+                        .message_bus
+                        .delete_message_checked(&request.src, msg);
+
+                    if state.past_broadcast.contains(&msg) {
+                        continue;
+                    }
+
+                    if dst_node_id == &state.node_id {
+                        continue;
+                    }
+                    let broadcast_msg = NodeMessage {
+                        src: state.node_id.clone(),
+                        dest: dst_node_id.clone(),
+                        body: BroadcastResponse {
+                            _type: "broadcast".into(),
+                            in_reply_to: None,
+                            msg_id: None,
+                            message: msg,
+                        },
+                    };
+
+                    let is_master_to_master = is_main_node(&dst_node_id) && is_main_node(&state.node_id);
+                    // Only master-master messages are tracked and retried.
+                    if is_master_to_master {
+                        let new_message_opt = state.message_bus.add_message(
+                            dst_node_id,
+                            msg,
+                            broadcast_msg.clone(),
+                        );
+                        if let Some(new_message) = new_message_opt {
+                            write_node_message(&new_message).unwrap();
+                            eprintln!(
+                                "{} [{}] Sent broadcast({}) to {} [read-sync]",
+                                get_ts(),
+                                state.node_id,
+                                msg,
+                                dst_node_id
+                            );
+                        }
+                    } else {
+                        write_node_message(&broadcast_msg).unwrap();
+                        eprintln!(
+                            "{} [{}] Sent broadcast({}) to {} [read-sync][no-tracking]",
+                            get_ts(),
+                            state.node_id,
+                            msg,
+                            dst_node_id
+                        );
+                    }
+                }
+
+                state.past_broadcast.insert(msg);
+            }
+        }
         RequestType::BroadcastOk(broadcast_ok) => {
             let msg = broadcast_ok.msg_id.unwrap();
             eprintln!(
@@ -65,23 +160,71 @@ fn handle_message(
                 state.node_id,
                 request.src
             );
-            let n = NodeMessage {
+            let read_ok = NodeMessage {
                 src: state.node_id.clone(),
                 dest: request.src.clone(),
-                body: ResponseBody::Read(ReadResponse {
+                body: ReadResponse {
                     _type: "read_ok".into(),
                     messages: state.values.iter().copied().collect(),
                     in_reply_to: read_body.msg_id,
                     msg_id: None,
-                }),
+                },
             };
-            write_node_message(&n).expect("Cannot write message.");
-            eprintln!(
-                "{} [{}] Sent read_ok to {}",
-                get_ts(),
-                state.node_id,
-                request.src
-            );
+
+            if is_customer_node(&request.src) {
+                let mut read_replicate_nodes = HashSet::new();
+
+                if is_main_node(&state.node_id) {
+                    for replicate_node in state.neighborhood.iter() {
+                        if replicate_node == &state.node_id {
+                            continue;
+                        }
+                        read_replicate_nodes.insert(replicate_node.clone());
+                    }
+                } else {
+                    let neighborhood_master = state.neighborhood.first().unwrap();
+                    let neighborhood = state.topology.get(neighborhood_master).unwrap();
+                    read_replicate_nodes.insert(neighborhood_master.clone());
+                    for replicate_node in neighborhood.iter() {
+                        if replicate_node == &state.node_id {
+                            continue;
+                        }
+                        read_replicate_nodes.insert(replicate_node.clone());
+                    }
+                }
+
+                for neighborhood_node_id in read_replicate_nodes {
+                    if neighborhood_node_id == state.node_id {
+                        continue;
+                    }
+
+                    let new_read = NodeMessage {
+                        src: state.node_id.clone(),
+                        dest: neighborhood_node_id.clone(),
+                        body: RequestType::Read(ReadBody {
+                            in_reply_to: None,
+                            msg_id: None,
+                        }),
+                    };
+                    write_node_message(&new_read).expect("Cannot write message.");
+                    eprintln!(
+                        "{} [{}] Sent replicate read to {}",
+                        get_ts(),
+                        state.node_id,
+                        neighborhood_node_id
+                    );
+                }
+                state.customer_read_bus.add(read_ok);
+            } else {
+                write_node_message(&read_ok).expect("Cannot write message.");
+                eprintln!(
+                    "{} [{}] Sent read_ok to {}: {:?}",
+                    get_ts(),
+                    state.node_id,
+                    request.src,
+                    read_ok.body.messages
+                );
+            }
         }
         RequestType::Broadcast(broadcast_request) => {
             eprintln!(
@@ -92,23 +235,29 @@ fn handle_message(
                 request.src
             );
             state.values.insert(broadcast_request.message);
-            let n = NodeMessage {
-                src: state.node_id.clone(),
-                dest: request.src.clone(),
-                body: ResponseBody::Basic(BasicResponse {
-                    _type: "broadcast_ok".into(),
-                    in_reply_to: broadcast_request.msg_id,
-                    msg_id: Some(broadcast_request.message),
-                }),
-            };
-            write_node_message(&n).expect("Cannot write message.");
-            eprintln!(
-                "{} [{}] Sent broadcast_ok({}) to {}",
-                get_ts(),
-                state.node_id,
-                broadcast_request.message,
-                request.src
-            );
+
+            let is_customer = is_customer_node(&request.src);
+            let is_master_broadcast = is_main_node(&request.src) && is_main_node(&state.node_id);
+
+            if is_customer || is_master_broadcast {
+                let n = NodeMessage {
+                    src: state.node_id.clone(),
+                    dest: request.src.clone(),
+                    body: ResponseBody::Basic(BasicResponse {
+                        _type: "broadcast_ok".into(),
+                        in_reply_to: broadcast_request.msg_id,
+                        msg_id: Some(broadcast_request.message),
+                    }),
+                };
+                write_node_message(&n).expect("Cannot write message.");
+                eprintln!(
+                    "{} [{}] Sent broadcast_ok({}) to {}",
+                    get_ts(),
+                    state.node_id,
+                    broadcast_request.message,
+                    request.src
+                );
+            }
 
             // Node is sending us broadcast, we don't need to broadcast to it.
             state
@@ -133,16 +282,28 @@ fn handle_message(
                         message: broadcast_request.message,
                     },
                 };
-
-                let new_message_opt = state.message_bus.add_message(
-                    neighborhood_node_id,
-                    broadcast_request.message,
-                    node.clone(),
-                );
-                if let Some(new_message) = new_message_opt {
-                    write_node_message(&new_message).unwrap();
+                let is_master_to_master = is_main_node(&neighborhood_node_id) && is_main_node(&state.node_id);
+                // Only master-master messages are tracked and retried.
+                if is_master_to_master {
+                    let new_message_opt = state.message_bus.add_message(
+                        neighborhood_node_id,
+                        broadcast_request.message,
+                        node.clone(),
+                    );
+                    if let Some(new_message) = new_message_opt {
+                        write_node_message(&new_message).unwrap();
+                        eprintln!(
+                            "{} [{}] Sent broadcast({}) to {}",
+                            get_ts(),
+                            state.node_id,
+                            broadcast_request.message,
+                            neighborhood_node_id
+                        );
+                    }
+                } else {
+                    write_node_message(&node).unwrap();
                     eprintln!(
-                        "{} [{}] Sent broadcast({}) to {}",
+                        "{} [{}] Sent broadcast({}) to {} [no-tracking]",
                         get_ts(),
                         state.node_id,
                         broadcast_request.message,
@@ -162,19 +323,9 @@ fn handle_message(
                 topology.topology
             );
             state.topology = topology.topology;
-            // if state.topology.contains_key(&state.node_id) {
-            //     state.neighborhood = state.topology.remove(&state.node_id).unwrap();
-            //     eprintln!(
-            //         "{} [{}] Local topology: {:?}",
-            //         get_ts(),
-            //         state.node_id,
-            //         state.neighborhood
-            //     );
-            //     state.message_bus.update_neighborhood(&state.neighborhood);
-            // }
             let node_number: String = state.node_id.chars().skip(1).collect();
             state.neighborhood = match node_number.parse::<u64>().unwrap() {
-                0 => vec!["n20", "n1", "n2", "n3", "n4", "n5"],
+                0 => vec!["n1", "n2", "n3", "n4", "n5"],
                 1..=4 => vec!["n0"],
                 5 => vec!["n0", "n6", "n7", "n8", "n9", "n10"],
                 6..=9 => vec!["n5"],
@@ -182,7 +333,7 @@ fn handle_message(
                 11..=14 => vec!["n10"],
                 15 => vec!["n10", "n16", "n17", "n18", "n19", "n20"],
                 16..=19 => vec!["n15"],
-                20 => vec!["n0", "n15", "n21", "n22", "n23", "n24"],
+                20 => vec!["n15", "n21", "n22", "n23", "n24"],
                 21..=24 => vec!["n20"],
                 _ => vec![],
             }
@@ -232,8 +383,32 @@ struct GlobalState {
     topology: HashMap<String, Vec<String>>,
     values: HashSet<u64>,
     past_broadcast: HashSet<u64>,
-
     message_bus: MessageBus,
+    customer_read_bus: CustomerBus,
+}
+
+#[derive(Debug, Clone)]
+struct CustomerBus {
+    messages: VecDeque<(Timer, NodeMessage<ReadResponse>)>,
+}
+
+impl CustomerBus {
+    /// Add an element to the customer bus with a newly created timer.
+    pub fn add(&mut self, message: NodeMessage<ReadResponse>) {
+        self.messages.push_back((Timer { instant: Instant::now(), duration: READ_WAIT_TIME}, message));
+    }
+
+    /// Pop an element from the customer bus, this will happend if there is an element
+    /// and if the timer is done.
+    pub fn pop(&mut self) -> Option<NodeMessage<ReadResponse>> {
+        if let Some((timer, _)) = self.messages.front() {
+            if timer.is_done() {
+                return self.messages.pop_front().map(|(_, m)| m);
+            }
+        }
+
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -319,6 +494,14 @@ impl Timer {
     }
 }
 
+fn is_customer_node(node_id: &str) -> bool {
+    node_id.chars().next() == Some('c')
+}
+
+fn is_main_node(node_id: &str) -> bool {
+    node_id == "n0" || node_id == "n5" || node_id == "n10" || node_id == "n15" || node_id == "n20"
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct PendingBroadcast {
     src_node: String,
@@ -339,13 +522,15 @@ enum ResponseBody {
     Read(ReadResponse),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type")]
 enum RequestType {
     #[serde(rename = "broadcast")]
     Broadcast(BroadcastBody),
     #[serde(rename = "read")]
     Read(ReadBody),
+    #[serde(rename = "read_ok")]
+    ReadOk(ReadOkBody),
     #[serde(rename = "topology")]
     Topology(TopologyBody),
     #[serde(rename = "broadcast_ok")]
@@ -392,6 +577,15 @@ struct BasicResponse {
 struct ReadResponse {
     #[serde(rename = "type")]
     _type: String,
+    messages: Vec<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    in_reply_to: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    msg_id: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+struct ReadOkBody {
     messages: Vec<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     in_reply_to: Option<u64>,

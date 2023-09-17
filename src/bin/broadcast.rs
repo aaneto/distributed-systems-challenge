@@ -1,4 +1,4 @@
-use std::collections::{VecDeque, HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{channel, TryRecvError};
 use std::thread;
 
@@ -44,7 +44,9 @@ fn handle_message(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match request.body {
         RequestType::BroadcastOk(broadcast_ok) => {
-            state.past_broadcast.insert((request.src, broadcast_ok.msg_id.unwrap()));
+            state
+                .past_broadcast
+                .insert((request.src, broadcast_ok.msg_id.unwrap()));
         }
         RequestType::Read(read_body) => {
             let n = NodeMessage {
@@ -52,7 +54,7 @@ fn handle_message(
                 dest: request.src,
                 body: ResponseBody::Read(ReadResponse {
                     _type: "read_ok".into(),
-                    messages: state.values.iter().map(|v| *v).collect(),
+                    messages: state.values.iter().copied().collect(),
                     in_reply_to: read_body.msg_id,
                     msg_id: None,
                 }),
@@ -73,7 +75,10 @@ fn handle_message(
             write_node_message(&n).expect("Cannot write message.");
 
             for neighborhood_node_id in state.neighborhood.iter() {
-                if state.past_broadcast.contains(&(neighborhood_node_id.clone(), broadcast_request.message)) {
+                if state
+                    .past_broadcast
+                    .contains(&(neighborhood_node_id.clone(), broadcast_request.message))
+                {
                     continue;
                 }
                 let node = NodeMessage {

@@ -1,7 +1,7 @@
-use std::collections::{VecDeque, HashMap, HashSet};
-use std::time::{Instant, Duration};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{channel, TryRecvError};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use distributed_systems::maelstrom::*;
 use serde::{Deserialize, Serialize};
@@ -43,8 +43,7 @@ fn main() {
                     if state.past_broadcast.contains(&(dest_node, message)) {
                         state.to_send.remove(state.sending_index).unwrap();
                         eprintln!("Removed from to_send: {}", state.to_send.len());
-                    }
-                    else if state.resend_timer.elapsed() > WAIT_TIME {
+                    } else if state.resend_timer.elapsed() > WAIT_TIME {
                         write_node_message(response).expect("Cannot write resend message.");
                         state.sending_index += 1;
                         state.resend_timer = Instant::now();
@@ -62,7 +61,9 @@ fn handle_message(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match request.body {
         RequestType::BroadcastOk(broadcast_ok) => {
-            state.past_broadcast.insert((request.src, broadcast_ok.msg_id.unwrap()));
+            state
+                .past_broadcast
+                .insert((request.src, broadcast_ok.msg_id.unwrap()));
             state.resend_timer = Instant::now() - 2 * WAIT_TIME;
         }
         RequestType::Read(read_body) => {
@@ -71,7 +72,7 @@ fn handle_message(
                 dest: request.src,
                 body: ResponseBody::Read(ReadResponse {
                     _type: "read_ok".into(),
-                    messages: state.values.iter().map(|v| *v).collect(),
+                    messages: state.values.iter().copied().collect(),
                     in_reply_to: read_body.msg_id,
                     msg_id: None,
                 }),
@@ -92,7 +93,10 @@ fn handle_message(
             write_node_message(&n).expect("Cannot write message.");
 
             for neighborhood_node_id in state.neighborhood.iter() {
-                if state.past_broadcast.contains(&(neighborhood_node_id.clone(), broadcast_request.message)) {
+                if state
+                    .past_broadcast
+                    .contains(&(neighborhood_node_id.clone(), broadcast_request.message))
+                {
                     continue;
                 }
                 let node = NodeMessage {

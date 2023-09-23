@@ -9,10 +9,6 @@ use serde::{Deserialize, Serialize};
 const WAIT_TIME: Duration = Duration::from_millis(120);
 const READ_WAIT_TIME: Duration = Duration::from_millis(1850);
 
-fn main_nodes() -> Vec<String> {
-    vec![0, 5, 10, 15, 20].iter().map(|v| format!("n{v}")).collect()
-}
-
 fn main() {
     let node_id = get_node_id().unwrap();
     let mut state = GlobalState {
@@ -26,7 +22,7 @@ fn main() {
         },
         customer_read_bus: CustomerBus {
             messages: VecDeque::new(),
-        }
+        },
     };
     let (tx, rx) = channel();
 
@@ -87,9 +83,7 @@ fn handle_message(
             for msg in new_msgs {
                 for dst_node_id in state.neighborhood.iter() {
                     // Node is sending us broadcast, we don't need to broadcast to it.
-                    state
-                        .message_bus
-                        .delete_message_checked(&request.src, msg);
+                    state.message_bus.delete_message_checked(&request.src, msg);
 
                     if state.past_broadcast.contains(&msg) {
                         continue;
@@ -109,14 +103,14 @@ fn handle_message(
                         },
                     };
 
-                    let is_master_to_master = is_main_node(&dst_node_id) && is_main_node(&state.node_id);
+                    let is_master_to_master =
+                        is_main_node(&dst_node_id) && is_main_node(&state.node_id);
                     // Only master-master messages are tracked and retried.
                     if is_master_to_master {
-                        let new_message_opt = state.message_bus.add_message(
-                            dst_node_id,
-                            msg,
-                            broadcast_msg.clone(),
-                        );
+                        let new_message_opt =
+                            state
+                                .message_bus
+                                .add_message(dst_node_id, msg, broadcast_msg.clone());
                         if let Some(new_message) = new_message_opt {
                             write_node_message(&new_message).unwrap();
                             eprintln!(
@@ -282,7 +276,8 @@ fn handle_message(
                         message: broadcast_request.message,
                     },
                 };
-                let is_master_to_master = is_main_node(&neighborhood_node_id) && is_main_node(&state.node_id);
+                let is_master_to_master =
+                    is_main_node(&neighborhood_node_id) && is_main_node(&state.node_id);
                 // Only master-master messages are tracked and retried.
                 if is_master_to_master {
                     let new_message_opt = state.message_bus.add_message(
@@ -395,7 +390,13 @@ struct CustomerBus {
 impl CustomerBus {
     /// Add an element to the customer bus with a newly created timer.
     pub fn add(&mut self, message: NodeMessage<ReadResponse>) {
-        self.messages.push_back((Timer { instant: Instant::now(), duration: READ_WAIT_TIME}, message));
+        self.messages.push_back((
+            Timer {
+                instant: Instant::now(),
+                duration: READ_WAIT_TIME,
+            },
+            message,
+        ));
     }
 
     /// Pop an element from the customer bus, this will happend if there is an element

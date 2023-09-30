@@ -1,0 +1,5 @@
+{"src": "c1","dest": "n1","body": {"type": "echo","msg_id": 1,"echo": "Please echo 35"}}
+{"src": "c1","dest": "n1","body": {"type": "generate","msg_id": 1}}
+{"src":"c1","dest":"n1","body":{"type":"init","msg_id":0,"node_id":"n1","node_ids": ["n1"]}}
+{"src":"c1","dest":"n1","body":{"type":"send","key": "k1","msg": 101}}
+{"src":"c1","dest":"n1","body":{"type":"poll","offsets": {"k1": 0, "k2": 3}}}

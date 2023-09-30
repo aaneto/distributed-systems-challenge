@@ -187,7 +187,6 @@ impl MaelstromHandler {
             self.pending_add.msg_id = Some(new_id);
             self.pending_add.timer.reset();
         }
-
     }
 
     fn handle_seq_kv_error(
@@ -241,7 +240,6 @@ impl MaelstromHandler {
         self.send_seq_kv_compare_and_swap(from, to, msg_id);
 
         self.pending_add.msg_id = Some(msg_id);
-
 
         Ok(())
     }

@@ -1,12 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::mpsc::{channel, TryRecvError};
 use std::thread;
-use std::time::{Duration, Instant};
 
-use distributed_systems::maelstrom::*;
-use serde::{Deserialize, Serialize};
+use distributed_systems::{kafka::*, maelstrom::*, *};
 
-const WAIT_TIME: Duration = Duration::from_millis(200);
 const POLL_SIZE: usize = 50;
 
 fn main() {
@@ -196,109 +193,4 @@ impl GlobalState {
             },
         }
     }
-}
-
-fn get_ts() -> String {
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap();
-    format!("{}.{}", ts.as_secs(), ts.subsec_millis())
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-enum RequestType {
-    #[serde(rename = "send")]
-    SendRequest(SendRequest),
-    #[serde(rename = "poll")]
-    PollRequest(PollRequest),
-    #[serde(rename = "commit_offsets")]
-    CommitOffsetsRequest(CommitOffsetsRequest),
-    #[serde(rename = "list_committed_offsets")]
-    ListCommitedOffsetsRequest(ListCommitedOffsetsRequest),
-}
-
-#[derive(Debug, Deserialize)]
-struct SendRequest {
-    key: String,
-    msg: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    in_reply_to: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    msg_id: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct PollRequest {
-    offsets: HashMap<String, u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    in_reply_to: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    msg_id: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CommitOffsetsRequest {
-    offsets: HashMap<String, u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    in_reply_to: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    msg_id: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ListCommitedOffsetsRequest {
-    keys: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    in_reply_to: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    msg_id: Option<u64>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(tag = "type")]
-enum ResponseType {
-    #[serde(rename = "send_ok")]
-    SendResponse(SendResponse),
-    #[serde(rename = "poll_ok")]
-    PollResponse(PollResponse),
-    #[serde(rename = "commit_offsets_ok")]
-    CommitOffsetsResponse(SimpleMessage),
-    #[serde(rename = "list_committed_offsets_ok")]
-    ListCommitedOffsetsResponse(ListCommitedOffsetsResponse),
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct SendResponse {
-    offset: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    in_reply_to: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    msg_id: Option<u64>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct PollResponse {
-    msgs: HashMap<String, Vec<[u64; 2]>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    in_reply_to: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    msg_id: Option<u64>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct SimpleMessage {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    in_reply_to: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    msg_id: Option<u64>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct ListCommitedOffsetsResponse {
-    offsets: HashMap<String, u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    in_reply_to: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    msg_id: Option<u64>,
 }

@@ -5,6 +5,45 @@ use std::error::Error;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
+pub trait MaelstromNode {
+    type MessageBody;
+
+    fn initialize(&mut self, node_id: String);
+    fn handle_message(&mut self, msg: NodeMessage<Self::MessageBody>) -> Result<(), Box<dyn std::error::Error>>;
+    fn handle_empty_queue(&mut self) -> Result<(), Box<dyn std::error::Error>> { Ok(()) }
+    fn handle_disconnected_queue(&mut self) -> Result<(), Box<dyn std::error::Error>> { panic!("Node queue disconnected.") }
+}
+
+pub fn run_node_event_loop<N>(mut node: N)
+where
+    N: MaelstromNode,
+    N::MessageBody: DeserializeOwned + Send + 'static
+{
+    let node_id = get_node_id().unwrap();
+    node.initialize(node_id);
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    std::thread::spawn(move || loop {
+        let request: NodeMessage<N::MessageBody> =
+            read_node_message().expect("Could not read request");
+        tx.send(request).unwrap();
+    });
+    loop {
+        let node_res = match rx.try_recv() {
+            Ok(msg) => node.handle_message(msg),
+            Err(std::sync::mpsc::TryRecvError::Empty) => node.handle_empty_queue(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => node.handle_disconnected_queue(),
+        };
+
+        match node_res {
+            Ok(()) => (),
+            Err(err) => {
+                eprintln!("Error running node event loop: {:?}", err);
+            }
+        };
+    }
+}
+
 pub fn read_node_message<B>() -> Result<NodeMessage<B>, Box<dyn Error>>
 where
     B: DeserializeOwned,
